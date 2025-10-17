@@ -1,0 +1,715 @@
+<!doctype html>
+<html lang="zh-CN">
+<head>
+  <meta charset="utf-8" />
+  <meta name="viewport" content="width=device-width,initial-scale=1" />
+  <title>My Lex Base</title>
+  <style>
+    :root {
+    --toc-w: 280px;
+    --gutter-w: 28px;
+    --bg: #ffffff;
+    --ink: #111827;
+    --muted: #6b7280;
+    --line: #e5e7eb;
+    --brand: #1f2937;
+    --accent: #0ea5e9;
+    --panel-bg:   #eef1f4;
+    --panel-line: #d9dde2; 
+    --panel-shadow: 0 1px 2px rgba(0,0,0,.04);
+    --sticky-top: 88px;
+    --chevron-ink: #000;
+    }
+
+    html, body { height: 100%; margin: 0; }
+    body {
+      font-family: system-ui, -apple-system, Segoe UI, Roboto, Helvetica, Arial;
+      color: var(--ink);
+      display: flex;
+      flex-direction: column;
+      background: var(--bg);
+    }
+
+    /* Header */
+    header {
+      border-bottom: 1px solid var(--panel-line);
+      padding: 10px 12px;
+      display: flex;
+      align-items: center;
+      gap: 12px;
+      position: sticky;
+      top: 0;
+      background: #fff;
+      z-index: 50;
+    }
+
+    /* 搜索栏 */
+    #searchbar { display:flex; align-items:center; gap:8px; flex: 1; }
+    #q { 
+      flex: 1; 
+      min-width: 260px; 
+      padding: 10px 14px;
+      font-size: 16px;
+      line-height: 1.3;
+    }
+
+    #q:focus-visible {
+      border-color: var(--accent);
+      /* === [v0.32-D-CSS-2] 去除输入框阴影，改用 outline 作为可访问性焦点环 === */
+      box-shadow: none;
+      outline: 2px solid rgba(14,165,233,.25);
+    }
+
+    #hit-info { margin-left: auto; order: 2; font-variant-numeric: tabular-nums; }
+    #prev-hit, #next-hit { order: 3; }
+
+    /* [v0.35-grid-safe] + [v0.35-hotfix-main-width]
+   使用 minmax(0, …) 防止右侧整条白块；宽度用 100% 避免桌面端 100vw 横向滚动条 */
+    main {
+      display: grid;
+      width: 100%; /* [v0.35-hotfix-main-width] */
+      grid-template-columns: minmax(0, var(--toc-w)) minmax(0, var(--gutter-w)) minmax(0, 1fr);
+      grid-template-areas: "toc gutter content";
+
+      /* [v0.35.4-CSS-FixedInset-Main] 让主内容贴边：不再依赖 vh 计算高度 */
+      position: fixed;           /* 关键：脱离文档流，直接贴可视窗口 */
+      left: 0; right: 0; bottom: 0;
+      top: var(--sticky-top);    /* header 实际高度（由 JS 维护） */
+      overflow: hidden;          /* 只让内部列滚动，主容器不滚动 */
+    }
+
+    /* [v0.35.4-CSS-FixedInset-Main] Grid 子项滚动需要这两句：内容不会把 fixed 容器撑破 */
+    main > *{ min-height: 0; }
+    aside#toc, section{ overflow: auto; }
+
+    body.sb-collapsed main {
+      grid-template-columns: 0 var(--gutter-w) 1fr;
+      grid-template-areas: "toc gutter content";
+    }
+    aside#toc   { grid-area: toc; }
+    #gutter     { grid-area: gutter; }
+    section     { grid-area: content; }
+    body.sb-collapsed aside#toc { overflow: hidden; pointer-events: none; }
+
+    /* TOC 栏 */
+    aside#toc {
+      position: static;
+      height: auto;
+      border-right: 0;
+      overflow: auto;
+      background: #fff;
+      box-shadow: none !important;
+    }
+    .toc-toolbar {
+      display:flex; align-items:center; justify-content:space-between;
+      gap: 8px;
+      padding:8px 10px; border-bottom:1px solid #f3f3f3;
+      position: sticky; top:0; background:#fff; z-index:10;
+    }
+    .toc-section-title{ font-weight:600; padding:8px 10px; }
+    #filetree, #page-toc { padding: 6px 10px; }
+
+    /* 文件树 */
+    .dir .header { display:flex; align-items:center; gap:6px; cursor:pointer; padding:4px 2px; border-radius:6px; }
+    .dir .children { padding-left: 2ch; }
+    a.file { display:block; padding:3px 2px; text-decoration:none; color:#222; border-radius:6px; }
+    a.file:hover { background: #f5f5f5; }
+    #filetree a.active{ background:#f3f4f6; border-radius:6px; }
+
+    /* 本页目录 */
+    #page-toc .toc-row{ display:flex; align-items:stretch;}
+    #page-toc .toc-row > .toc-line { flex:1; }
+    #page-toc .toc-fold{
+      width:1.25em;        /* 固定命中区 */
+      flex:0 0 1.25em;
+      text-align:center;
+    }
+
+    /* 统一 caret 风格（文件树 + 本页目录） */
+    /* === [v0.33-CSS-Align-1] 以字体中线为基准对齐：容器相对定位，向下偏移行内额外留白的一半 === */
+    #filetree .caret, #page-toc .toc-fold{
+      display:inline-flex; align-items:center; justify-content:center;
+      width: 1.25em; height: 1.5em;
+      cursor: pointer;
+      color: var(--chevron-ink);
+      position: relative;
+      /* 行高 1.5em、字体高 1em → 顶/底各留 0.25em。把容器整体下移这 0.25em，令图标中心 ≈ 字体中线 */
+      top: calc((1.5em - 1em) / 2);  /* 即 0.25em */
+    }
+
+
+    /* === [v0.33-CSS-Dir-2] chevron 尺寸与粗细提升 === */
+    #filetree .caret svg,
+    #page-toc .toc-fold svg{
+      width: 16px;
+      height: 16px;
+      display: block;
+      transition: transform .12s ease;
+      pointer-events: none;
+    }
+
+    /* 叠加：轻描边 */
+    #filetree .caret svg path,
+    #page-toc .toc-fold svg path{
+      vector-effect: non-scaling-stroke;
+      shape-rendering: geometricPrecision;
+    }
+
+    /* === [v0.34-CHEV-BOLD-LAYER] 双层描边：底层更粗 + 顶层基线，显著更黑更粗 === */
+    #filetree .caret svg .chev-layer,
+    #page-toc .toc-fold svg .chev-layer{
+      stroke: var(--chevron-ink);           /* 继续用你的专用深色 */
+      vector-effect: non-scaling-stroke;
+      shape-rendering: geometricPrecision;
+    }
+
+    /* 顶层：你现在的基线粗细（例如 3.0）——保持锐利 */
+    #filetree .caret svg .chev-layer--over,
+    #page-toc .toc-fold svg .chev-layer--over{
+      stroke-width: 3.0;
+    }
+
+    /* 底层：比顶层更粗一截，建议 5.0 ~ 6.0
+      经验值：顶层 3.0 + 底层 5.6 ≈ 体感 “+80%~+100%” 的黑/粗 */
+    #filetree .caret svg .chev-layer--under,
+    #page-toc .toc-fold svg .chev-layer--under{
+      stroke-width: 5.6;
+    }
+    /* 可选：让 chevron 永远比文字更深一点 */
+    #filetree .caret, #page-toc .toc-fold{ color: var(--chevron-ink); }
+    #filetree .caret svg .chev-layer,
+    #page-toc .toc-fold svg .chev-layer{ stroke: var(--chevron-ink); }
+
+
+    /* 折叠态：向右；展开态（默认）向下 —— 用 data-state 驱动旋转 */
+    /* 展开态：朝下 */
+    #filetree .caret[data-state="expanded"] svg,
+    #page-toc .toc-fold[data-state="expanded"] svg{
+      transform: rotate(90deg);
+    }
+
+    /* Page TOC 叶子：透明但占位 */
+    #page-toc .toc-fold.leaf{ opacity:0; pointer-events:none; }
+
+    /* 搜索提示词样式 */
+    #search-tip{
+      background: var(--panel-bg);
+      border: 1px solid var(--panel-line);
+      border-top: 0;           /* === [v0.32-D1-CSS] 只让 header 画这条缝线 === */
+      border-bottom: 0;   /* 下边界交给 gutter 顶边 */
+      box-shadow: none !important;
+      padding: 6px 8px;
+      position: sticky;
+      top: 48px;          /* 保持原有偏移 */
+      z-index: 5;
+    }
+
+    /* gutter样式 */
+    #gutter{
+      background: var(--panel-bg);
+      border: 1px solid var(--panel-line);
+      border-top: 0;
+      box-shadow: none !important;
+      position: static;
+      height: auto;
+      display: flex;
+      justify-content: flex-start;
+      align-items: flex-start;
+      padding-top: 0;
+      padding-left: 0;
+      padding-right: 0;
+    }
+
+    /* === [v0.32-E-CSS-3] JS 控制的 gutter 悬浮态 === */
+    #gutter.gutter-hover{
+      background:#d1fae5;
+      border-color:#10b981;
+    }
+
+    /* === [v0.32-G-rect-mask] 真 toc 的上/下细线只围白区，右侧不越界 === */
+    #toc-toggle{
+      background: #fff;
+      /* 不再用 border-top/bottom，避免越到灰缝；左侧竖线也用背景画 */
+      border: 0;
+      border-radius: 0;
+      height: 80px;
+      width: 100%;
+      margin-top: 16px;
+      margin-left: 0;
+      margin-right: 0;
+      box-shadow: none;
+      cursor: pointer;
+      display: flex;
+      align-items: center;
+      justify-content: center;
+      position: relative;
+
+      /* 用三层背景渐变画出 1px 的“上、下、左”细线：
+        - 上/下：长度裁成 calc(100% - 4px)，恰好在白区内收住
+        - 左：整高 1px 竖线，等价于原 border-left:1px */
+      background:
+        /* 顶部 1px 线（只到白区右缘，留出 4px 假缝） */
+        linear-gradient(var(--panel-line), var(--panel-line)) top left /
+          calc(100% - 4px) 1px no-repeat,
+        /* 底部 1px 线（同上） */
+        linear-gradient(var(--panel-line), var(--panel-line)) bottom left /
+          calc(100% - 4px) 1px no-repeat,
+        /* 左侧 1px 竖线 */
+        linear-gradient(to bottom, var(--panel-line), var(--panel-line)) right top /
+          1px 100% no-repeat,
+        /* 最底层白底 */
+        #fff;
+    }
+
+    /* 伪元素：右侧 4px 灰缝 + 左缘 1px 分隔竖线（替代 toc 的右框） */
+    #toc-toggle::after{
+      content: "";
+      position: absolute;
+      inset: 0 0 0 auto;           /* 相当于 top:0; right:0; bottom:0; */
+      width: 4px;
+      background:
+        linear-gradient(to right,
+          var(--panel-line) 1px,   /* 左缘 1px 竖线 */
+          var(--panel-bg) 1px      /* 其余为浅灰缝 */
+        );
+      pointer-events: none;
+    }
+
+
+    /* 键盘焦点：以 outline 作为“黑框”，并让内部 1px 边透明，避免双层叠加 */
+    #toc-toggle:focus-visible{
+      outline: 2px solid #000;     /* 这就是你说“恰到好处”的黑框 */
+      outline-offset: 0;
+      border-color: transparent;   /* 不再叠加 1px 黑边 */
+      border-left: 0;              /* 继续与目录无缝 */
+      background: #fff;
+    }
+
+    /* 鼠标悬浮：若没有键盘焦点，则用同款 outline；有焦点时，不重复加样式 */
+    #toc-toggle:hover:not(:focus-visible),
+    #toc-toggle.toc-hover:not(:focus-visible){
+      outline: 2px solid #000;     /* 与 focus-visible 完全一致 */
+      outline-offset: 0;
+      border-color: transparent;   /* 防止“黑边 + 黑框”叠加变粗 */
+      border-left: 0;
+      background: #fff;
+    }
+
+    /* === [v0.33-SVG-CSS-3] toc-toggle：三角 SVG 与旋转（方向由 aria-expanded 决定） === */
+    #toc-toggle .icon-triangle{
+      width: 16px;
+      height: 16px;
+      display: block;
+      transition: transform .12s ease;
+      pointer-events: none;           /* 关键：SVG 不吃点击，命中在按钮上 */
+    }
+    /* 展开(true)：右→左；收起(false)：保持向右 */
+    #toc-toggle[aria-expanded="true"] .icon-triangle{
+      transform: rotate(180deg);
+    }
+
+    /* 本页目录文字样式 —— 统一到与文件树一致的字号 */
+    #page-toc a{
+      flex:1 1 auto;
+      display:inline-block;
+      padding-left:0;
+      white-space:nowrap;
+      overflow:hidden;
+      text-overflow:ellipsis;
+      font-size:16px;     /* 由 14px 调整为 16px */
+      line-height:1.5;    /* 与文件树观感更接近 */
+      color:#222;
+      text-decoration:none;
+      border-radius:6px;
+    }
+
+    /* 目录整行高亮（含小箭头区域） */
+    #page-toc .toc-line.active,
+    #page-toc .toc-line.locked{
+      background: #e8f3fe;         
+    }
+
+    mark.search-hit { background:#fff3a8; padding:0 2px; }
+    mark.search-current { background:#ffd54f; outline: 1px solid #ff9800; }
+
+    /* 正文区 */
+    section { 
+      /* [v0.35.4] 正文区不再用 vh，交给 main 的 fixed+inset 管 */
+      height: auto;
+      overflow: auto; 
+    }
+    #viewer { padding: 16px 24px; max-width: 1100px; font-size:17px; line-height:1.65; }
+    
+    /* 段落的底部间距：约半行，细密但不拥挤 */
+    #viewer p { margin: 0 0 0.825em; } /* 0.825 = 1.65 / 2 */
+
+    #viewer h1{ font-size:24px; margin:1.2em 0 0.6em; }
+    #viewer h2{ font-size:22px; margin:1.1em 0 0.5em; }
+    #viewer h3{ font-size:20px; margin:1em 0 0.5em; }
+    #viewer h4{ font-size:18px; margin:0.9em 0 0.4em; }
+    #viewer h5, #viewer h6{
+      font-size:17px;
+      margin:0.8em 0 0.3em;
+      font-weight:bold;
+    }
+    #viewer h1, #viewer h2, #viewer h3, #viewer h4, #viewer h5, #viewer h6 { scroll-margin-top: 90px; }
+
+    /* 段落后紧跟标题时，强制拉开等于一行行高的间距 */
+    #viewer p + h1,
+    #viewer p + h2,
+    #viewer p + h3,
+    #viewer p + h4,
+    #viewer p + h5,
+    #viewer p + h6 {
+    margin-top: 1.8em !important; /* 等于正文 line-height，观感稳 */
+    }
+
+    /* 高亮 */
+    .md-section.section-highlight{
+      background:#fff8c4;
+      border-radius:4px;
+      padding:2px 0;
+    }
+    #viewer .section-highlight{ 
+      background:#fff8c4; 
+      transition: background-color .2s ease; 
+    }
+
+    @media (max-width: 880px) {
+      :root { --toc-w: 280px; }
+    }
+
+    /* icon 按钮 */
+    .icon-btn{
+      border:1px solid var(--line);
+      padding:10px 14px;
+      background:#fff;
+      border-radius:6px;
+      cursor:pointer;
+      min-width:32px;
+      text-align:center;
+      font-size:16px;
+      color: var(--ink);        /* ← 新增这一行，确保 currentColor = 深色 */
+    }
+    .icon-btn:hover{ background:#f9fafb; }
+
+    /* [v0.35-icon-center] 按钮内统一用 flex 居中，避免字体差异造成偏心 */
+    .icon-btn{ display:inline-flex; align-items:center; justify-content:center; line-height:1; }
+    .icon-btn svg{ display:block; }
+
+    /* [v0.35.3-CSS-IconLayers-Path] 本地 path 双层叠厚：下层外扩 + 顶层基线；更黑更稳（与 chevron 一致） */
+    .icon-btn .icon-ms{ width:24px; height:24px; display:block; }
+    .icon-btn .icon-layer--under,
+    .icon-btn .icon-layer--over{
+      fill: currentColor;     /* Material 填充型走 fill */
+      stroke: currentColor;   /* Lucide 描边型走 stroke */
+    }
+
+    /* 两枚按钮图标：统一 30px 尺寸（覆盖全局 24px） */
+    #index-toggle .icon-ms,
+    #search-toggle .icon-ms{
+      width: 28px;
+      height: 28px;
+    }
+
+    /* 纯净版描边：统一加一些线宽（与 search 方法一致） */
+    #index-toggle .icon-ms path,
+    #search-toggle .icon-ms path,
+    #search-toggle .icon-ms circle{
+      stroke-width: 3.2;                  /* 可按观感调 2.8~3.2 */
+      stroke-linecap: round;
+      stroke-linejoin: round;
+      vector-effect: non-scaling-stroke;  /* 放大SVG不让线宽跟着变 */
+      shape-rendering: geometricPrecision;
+    }
+
+    /* resizable gutter */
+    #gutter { cursor: col-resize; }
+    body.resizing, body.resizing * { cursor: col-resize !important; user-select: none !important; }
+
+    /* Minor: make filetree rows easier to target on hover */
+    #filetree .header:hover{ background:#f9fafb; }
+
+    #toc-toggle[aria-pressed="false"]{ opacity:.75; }
+
+    /* v0.30：文档内目录逐级折叠 */
+    /* [v0.34-C2-CSS-fix-2] 已弃用：树形嵌套 DOM 时代的规则
+    #page-toc li.collapsed > ul { display:none; }
+    */
+    #page-toc .toc-line{
+      display:flex; align-items:center; gap:6px; 
+      white-space:nowrap; overflow:hidden; text-overflow:ellipsis;
+      padding:2px 4px;
+    }
+
+    /* [v0.34-C2-CSS-fix-1] 解耦缩进与高亮：缩进写在 .toc-indent 上 */
+    #page-toc .toc-line .toc-indent{
+      display:flex; align-items:center; gap: 6px; /* chevron ↔ 文字 = 6px，与 filetree 对齐 */
+      flex: 1 1 auto;
+      min-width: 0;
+      padding-left: 0; /* 层级缩进由 JS 注入到这里（单位 2ch/级） */
+    }
+
+    #page-toc .toc-line a{
+      display:block;      /* 关键：块级才能铺满 flex 剩余宽度 */
+      flex:1;
+      min-width:0;        /* 关键：允许在 flex 下收缩，否则省略号不生效 */
+      overflow:hidden;
+      text-overflow:ellipsis;
+      white-space:nowrap;
+    }
+
+    /* [v0.34-C2-CSS-fix-2] 已弃用：旧 chevron 类名 .twisty（现统一使用 .toc-fold）
+    #page-toc .twisty{
+      display:inline-flex; align-items:center; justify-content:center;
+      width:1.2em; height:1.2em; line-height:1; font-size:1em; font-weight:700;
+      background:transparent; border:none; cursor:pointer; user-select:none;
+    }
+    */
+    
+    /* v0.30 兜底规则：保证 hidden 永远隐藏 */
+    [hidden] {
+      display: none !important;
+    }
+
+    /* === [v0.32-B2-CSS-strong] 彻底禁用页面级 overscroll（防止触控板回弹露白） === */
+    /* 说明：这里写死 html/body 的 overscroll 行为为 none，阻断一切页面级回弹；
+      内部滚动容器（aside#toc、section）继续使用自身的 overflow:auto 正常滚动。 */
+    html, body {
+      overscroll-behavior: none;       /* 禁止页面级 overscroll（x/y 全禁） */
+      overscroll-behavior-x: none;
+      overscroll-behavior-y: none;
+    }
+
+    /* 如需明确内部容器不把滚动继续向外冒泡，可保留/追加 contain（可选）： */
+    aside#toc, section {
+      overscroll-behavior: contain;    /* 可选：内部到边界时不外传 */
+    }
+
+    /* [v0.35-minwidth-zero] 防止小屏以内容宽度撑爆或缩瘪导致整条白块 */
+    aside#toc, #gutter, section { min-width: 0; }
+
+    /* [v0.35.1-CSS-Desktop-Hide-HeaderBtns] 桌面端默认隐藏移动端按钮 */
+    #index-toggle, #search-toggle{ display:none; }
+    
+    /* [v0.35.3-CSS-Mobile-Grid-NoGutter] ——（≤768px 移动端样式） */
+    /* [v0.35.3-CSS-Mobile-Grid-NoGutter] ——（≤768px 移动端样式） */
+    @media (max-width: 768px){
+
+      /* Header 两行：.bar-top 第一行，#searchbar 第二行 */
+      header{ display:block; padding:8px 10px; border-bottom:2px solid var(--panel-line); }
+
+      /* 第一行：品牌在左、按钮组在右（原始：space-between） */
+      header .bar-top{
+        display:flex; align-items:center; justify-content:space-between; gap:8px;
+      }
+      header .bar-top strong{
+        flex:1 1 auto;
+        font-weight:700;
+        font-size: clamp(20px, 6vw, 24px);
+        padding-right:16px;
+      }
+
+      /* 移动端显示两枚按钮（原始：长方形，左右内边距 12px） */
+      #index-toggle, #search-toggle{
+        display:flex; align-items:center; justify-content:center;
+        min-width:40px; height:40px; padding:0 12px;
+      }
+
+      /* 第二行搜索条：默认收起；展开后独占一行 */
+      #searchbar{
+        display:none; width:100%;
+        margin-top:8px; align-items:center; gap:8px;
+      }
+      body.search-open #searchbar{ display:flex; }
+
+      /* 移动端隐藏 search-tip（不占位） */
+      #search-tip{
+        display:none !important;
+        height:0 !important; padding:0 !important; margin:0 !important;
+        overflow:hidden !important;
+      }
+
+      /* 移动端：彻底移除 gutter / toc-toggle 的可见与占位 */
+      #gutter, #toc-toggle{ display:none !important; }
+
+      /* 网格：不再为 gutter 预留宽度 */
+      body:not(.sb-collapsed) main{
+        grid-template-columns: minmax(0, var(--toc-w)) 0 minmax(0, 1fr);
+      }
+      body.sb-collapsed main{
+        grid-template-columns: 0 0 minmax(0,1fr);
+      }
+
+      /* =========================================================
+      * [v0.40-MOBILE-LEFT-SEPARATOR]
+      * 移动端正文左侧分隔线
+      * - 目的：gutter 隐藏时，仍显示目录与正文间的分隔线
+      * - 状态：目录展开时显示；折叠时隐藏
+      * - 粗细：2px（与 header 下边线一致）
+      * ========================================================= */
+
+      body:not(.sb-collapsed) main > section{
+        border-left: 2px solid var(--panel-line);
+      }
+
+      body.sb-collapsed main > section{
+        border-left: 0;
+      }
+      /* =========================================================
+      * [v0.40-MOBILE-LEFT-SEPARATOR] —— END
+      * ========================================================= */
+    }
+
+</style>
+
+
+</head>
+<body>
+  <!-- [v0.35-HTML-Header-TopRow] 两行 Header：bar-top + #searchbar -->
+  <header>
+    <!-- [v0.35.1-HTML-Header-Buttons] 品牌 + Index + Search（双层图标） -->
+    <div class="bar-top">
+      <strong>My Lex Base</strong>
+
+      <!-- Index（目录）按钮：本地 path 双层叠厚 -->
+     <button id="index-toggle" class="icon-btn" aria-label="Index">
+        <svg class="icon-ms" aria-hidden="true" width="24" height="24" viewBox="0 0 24 24">
+          <!-- 纯净 list：无 <use>、无双层、无滤镜，仅基础路径（描边） -->
+          <path d="M3 5h.01"  fill="none" stroke="currentColor" stroke-width="2" stroke-linecap="round" stroke-linejoin="round"/>
+          <path d="M3 12h.01" fill="none" stroke="currentColor" stroke-width="2" stroke-linecap="round" stroke-linejoin="round"/>
+          <path d="M3 19h.01" fill="none" stroke="currentColor" stroke-width="2" stroke-linecap="round" stroke-linejoin="round"/>
+          <path d="M8 5h13"   fill="none" stroke="currentColor" stroke-width="2" stroke-linecap="round" stroke-linejoin="round"/>
+          <path d="M8 12h13"  fill="none" stroke="currentColor" stroke-width="2" stroke-linecap="round" stroke-linejoin="round"/>
+          <path d="M8 19h13"  fill="none" stroke="currentColor" stroke-width="2" stroke-linecap="round" stroke-linejoin="round"/>
+        </svg>
+     </button>
+
+     <button id="search-toggle" class="icon-btn" aria-label="Search">
+        <svg class="icon-ms" aria-hidden="true" width="24" height="24" viewBox="0 0 24 24">
+          <!-- 纯净 search：无 <use>、无双层、无滤镜，仅基础路径 -->
+          <path d="m21 21-4.34-4.34" fill="none" stroke="currentColor" stroke-width="2"
+                stroke-linecap="round" stroke-linejoin="round"/>
+          <circle cx="11" cy="11" r="8" fill="none" stroke="currentColor" stroke-width="2"
+                  stroke-linecap="round" stroke-linejoin="round"/>
+        </svg>
+     </button>
+
+    </div>
+
+    <div id="searchbar">
+      <input id="q" type="search" placeholder="在当前文档内搜索（支持多命中）…" />
+      <button id="prev-hit" class="icon-btn" title="上一个匹配">
+        <!-- [v0.35-svg-hit-up] 用 SVG 替换 ▲，防止移动端偏心 -->
+        <svg class="icon-triangle-up" aria-hidden="true" viewBox="0 0 24 24" width="16" height="16">
+          <path d="M12 6 L5 18 L19 18 Z" fill="currentColor"/>
+        </svg>
+      </button>
+      <button id="next-hit" class="icon-btn" title="下一个匹配">
+        <!-- [v0.35-svg-hit-down] 用 SVG 替换 ▼ -->
+        <svg class="icon-triangle-down" aria-hidden="true" viewBox="0 0 24 24" width="16" height="16">
+          <path d="M12 18 L5 6 L19 6 Z" fill="currentColor"/>
+        </svg>
+      </button>
+      <span id="hit-info">0 / 0</span>
+    </div>
+  </header>
+
+  <div id="search-tip">提示：目前仅支持“当前文档内”的全文搜索；请先在左侧选择一个文档。</div>
+
+  <main>
+    <aside id="toc">
+      <div class="toc-toolbar">
+        <strong id="toc-title">法律法规库</strong>
+        <div class="toc-toolbar-right">
+          <button id="toc-mode" title="在 文件树 / 本页目录 之间切换">切换视图</button>
+          <button id="toc-expand-all" title="展开/收起全部">展开全部</button>
+        </div>
+      </div>
+      <div id="filetree"></div>
+      <div id="page-toc" style="display:none;"></div>
+    </aside>
+
+    <div id="gutter">
+      <!-- === [v0.33-SVG-HTML-2] toc-toggle 使用三角 SVG，方向由 aria-expanded 控制 === -->
+      <button id="toc-toggle" aria-controls="toc" aria-expanded="true" aria-label="收起目录">
+        <svg class="icon-triangle" aria-hidden="true"><use href="#icon-triangle"></use></svg>
+      </button>
+    </div>
+
+    <section>
+      <div id="results"></div>
+      <article id="viewer"></article>
+    </section>
+  </main>
+
+  <script src="assets/marked.min.js"></script>
+  <script src="assets/app.js"></script>
+  
+  <!-- === [v0.33-SVG-HTML-1] 全站可复用的 SVG 符号 === -->
+  <!-- 站点可复用的 SVG 符号 & 过滤器 -->
+  <svg aria-hidden="true"
+    xmlns="http://www.w3.org/2000/svg"
+    xmlns:xlink="http://www.w3.org/1999/xlink"
+    style="position:absolute; width:0; height:0; overflow:hidden">
+    <defs>
+      <symbol id="icon-chev" viewBox="0 0 24 24" fill="none">
+        <!-- 底层：加“体积”（更粗） -->
+        <path class="chev-layer chev-layer--under"
+              d="M7.8 3.5 L16 12 L7.8 20.5"
+              stroke="currentColor" stroke-width="3.0"
+              stroke-linecap="round" stroke-linejoin="round"/>
+        <!-- 顶层：保“锐利边”（基线粗细） -->
+        <path class="chev-layer chev-layer--over"
+              d="M7.8 3.5 L16 12 L7.8 20.5"
+              stroke="currentColor" stroke-width="2.5"
+              stroke-linecap="round" stroke-linejoin="round"/>
+      </symbol>
+
+      <!-- 老版本浏览器： 用硬编码 -->
+      <path class="chev-layer chev-layer--under"
+            d="M7.8 3.5 L16 12 L7.8 20.5"
+            stroke="#111" stroke-width="2.8"
+            stroke-linecap="round" stroke-linejoin="round"/>
+    
+      <!-- 外扩增粗过滤器（开 V 也能“再粗”） -->
+      <filter id="chev-thicken" color-interpolation-filters="sRGB">
+        <!-- 0.6~0.9：0.7 ≈ 再粗约 50% ；可按效果微调 -->
+        <feMorphology operator="dilate" radius="0.9"/>
+      </filter>
+
+      <!-- Search 单层增粗专用滤镜：略强于 chev-thicken，使体感接近 Index 的“双写+滤镜” -->
+      <filter id="search-thicken" color-interpolation-filters="sRGB">
+        <!-- 可在 1.0 ~ 1.3 之间微调；先给 1.15 做对标 -->
+        <feMorphology operator="dilate" radius="1.15"/>
+      </filter>
+
+      <!-- 实心三角（用于 toc-toggle，可选） -->
+      <symbol id="icon-triangle" viewBox="0 0 24 24" fill="currentColor">
+        <!-- 等腰右向三角：CSS 旋转方向 -->
+        <path d="M8 5 L18 12 L8 19 Z"></path>
+      </symbol>
+      
+      <!-- Lucide list -->
+      <symbol id="icon-list" viewBox="0 0 24 24" fill="none"
+          stroke="currentColor" stroke-width="2"
+          stroke-linecap="round" stroke-linejoin="round">
+        <path d="M3 5h.01"/>
+        <path d="M3 12h.01"/>
+        <path d="M3 19h.01"/>
+        <path d="M8 5h13"/>
+        <path d="M8 12h13"/>
+        <path d="M8 19h13"/>
+      </symbol>
+
+      <!-- Lucide search -->
+      <symbol id="icon-search" viewBox="0 0 24 24" fill="none"
+          stroke="currentColor" stroke-width="2"
+          stroke-linecap="round" stroke-linejoin="round">
+        <path d="m21 21-4.34-4.34"/>
+        <circle cx="11" cy="11" r="8"/>
+      </symbol>
+    </defs>
+  </svg>
+</body>
+</html>

@@ -1,0 +1,51 @@
+# [v0.40-meta-ci-basic] ADD + .github/workflows/metadata-write.yml
+name: Write Metadata From CSV
+
+on:
+  workflow_dispatch:
+    inputs:
+      csv_path:
+        description: "Path to CSV in repo (e.g., meta.csv)"
+        required: true
+        default: "meta.csv"
+  push:
+    paths:
+      - "meta.csv"              # CSV 变更时自动跑
+      - "scripts/assign_metadata_from_csv.py"
+
+jobs:
+  write-meta:
+    runs-on: ubuntu-latest
+    permissions:
+      contents: write           # 允许提交回仓库
+      pull-requests: write
+    steps:
+      - name: Checkout
+        uses: actions/checkout@v4
+
+      - name: Setup Python
+        uses: actions/setup-python@v5
+        with:
+          python-version: "3.x"
+
+      - name: Zip content
+        run: zip -r current_content.zip content
+
+      - name: Run metadata writer
+        run: |
+          python scripts/assign_metadata_from_csv.py \
+            --zip current_content.zip \
+            --csv "${{ github.event.inputs.csv_path || 'meta.csv' }}" \
+            --out content_with_meta.zip
+
+      - name: Unzip back to repo
+        run: unzip -o content_with_meta.zip -d .
+
+      - name: Create PR with changes
+        uses: peter-evans/create-pull-request@v6
+        with:
+          commit-message: "chore: inject metadata from CSV (CI)"
+          title: "Inject metadata from CSV"
+          body: "Automated front matter injection for v0.40"
+          branch: "ci/metadata-injection"
+          delete-branch: true
