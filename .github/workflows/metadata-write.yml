@@ -12,6 +12,9 @@ on:
     paths:
       - "meta.csv"              # CSV 变更时自动跑
       - "scripts/assign_metadata_from_csv.py"
+permissions:
+  contents: write        # 允许推送内容
+  pull-requests: write   # 允许创建和更新 PR
 
 jobs:
   write-meta:
