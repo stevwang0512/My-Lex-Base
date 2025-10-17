@@ -21,7 +21,7 @@ def load_csv(p: Path):
         for r in reader:
             # normalize keys
             r = {k.strip(): (v.strip() if isinstance(v,str) else v) for k,v in r.items()}
-            if not r.get("title"): 
+            if not r.get("title"):
                 continue
             rows.append(r)
     return rows
@@ -69,15 +69,18 @@ def parse_yaml(s: str):
 
 def dump_yaml(d: dict):
     out = []
-    for k,v in d.items():
-        if v is None or v=="":
+    for k, v in d.items():
+        if v is None or v == "":
             continue
-        # quote if needed
-        if re.search(r"[#:>\\-\\[\\]\\{\\}\\s]", str(v)):
-            out.append(f"{k}: \"{str(v).replace('\"','\\\"')}\"")
+        sval = str(v)
+        # quote if needed (contains spaces or YAML special chars)
+        if re.search(r"[#:\\s>\-\[\]\{\}]", sval):
+            # escape double quotes inside the value
+            escaped = sval.replace('"', '\\"')
+            out.append(f'{k}: "{escaped}"')
         else:
-            out.append(f"{k}: {v}")
-    return "\\n".join(out) + "\\n"
+            out.append(f"{k}: {sval}")
+    return "\n".join(out) + "\n"
 
 def ensure_front_matter(md_path: Path, assign: dict):
     text = md_path.read_text("utf-8", errors="ignore")
@@ -91,7 +94,7 @@ def ensure_front_matter(md_path: Path, assign: dict):
         if k in assign and assign[k] not in (None, ""):
             meta[k] = assign[k]
     # rebuild
-    new = "---\\n" + dump_yaml(meta) + "---\\n" + body.lstrip()
+    new = "---\n" + dump_yaml(meta) + "---\n" + body.lstrip()
     md_path.write_text(new, "utf-8")
 
 def main():
@@ -124,14 +127,99 @@ def main():
         if not root.exists():
             print("[error] content root not found in zip:", root); sys.exit(1)
 
-        ok, miss = 0, []
-        for r in rows:
+        # Build in-memory title catalog with normalized keys
+        def normalize(s: str) -> str:
+            import unicodedata
+            if s is None: return ""
+            s = unicodedata.normalize('NFKC', s)
+            s = re.sub(r"\s+", " ", s).strip().lower()
+            s = re.sub(r"[^0-9a-zA-Z\u4e00-\u9fff]+", "", s)
+            return s
+
+        title_items = []
+        for idx, r in enumerate(rows):
             title = r.get("title") or r.get("Title") or r.get("名称") or r.get("文件名")
-            if not title: 
+            if not title:
                 continue
-            # normalize assign dict
+            cat = (r.get("category_code") or "").lstrip('0')
+            title_items.append({"idx": idx, "row": r, "title": title, "norm": normalize(title), "category": cat})
+
+        # list md files in the extracted tree
+        md_files = list((td / args.content_root).rglob("*.md"))
+
+        # candidates for each md
+        md_candidates = {}
+        for md in md_files:
+            md_norm = normalize(md.stem)
+            # derive md category from path like 'content/02 民法/...'
+            parts = md.parts
+            md_cat = ""
+            if len(parts) >= 2 and parts[0] == args.content_root:
+                m = re.match(r"^(\d+)", parts[1])
+                if m:
+                    md_cat = m.group(1).lstrip('0')
+
+            cands = []
+            # prefer same-category titles first
+            same_cat = [t for t in title_items if t["category"] == md_cat] if md_cat else []
+            search_space = same_cat if same_cat else title_items
+            for t in search_space:
+                # match if normalized equal or contained
+                if t["norm"] == md_norm or t["norm"] in md_norm or md_norm in t["norm"]:
+                    # scoring: exact match wins; category match +100; length proximity bonus
+                    score = 0
+                    if t["norm"] == md_norm:
+                        score += 1000
+                    else:
+                        score += 500
+                    if t["category"] == md_cat and md_cat:
+                        score += 100
+                    score += max(0, 100 - abs(len(t["norm"]) - len(md_norm)))
+                    cands.append((score, t))
+            # if no same-category candidates, try global search (if not already)
+            if not cands and search_space is not title_items:
+                for t in title_items:
+                    if t["norm"] == md_norm or t["norm"] in md_norm or md_norm in t["norm"]:
+                        score = 0
+                        if t["norm"] == md_norm:
+                            score += 1000
+                        else:
+                            score += 500
+                        if t["category"] == md_cat and md_cat:
+                            score += 100
+                        score += max(0, 100 - abs(len(t["norm"]) - len(md_norm)))
+                        cands.append((score, t))
+
+            # sort candidates by score descending
+            cands.sort(key=lambda x: (-x[0], -len(x[1]["norm"]) ))
+            md_candidates[str(md)] = cands
+
+        # Greedy assignment to ensure one-to-one mapping
+        assigned = {}
+        used_title_idxs = set()
+        # sort md files by top candidate strength so confident matches are assigned first
+        md_order = sorted(md_candidates.items(), key=lambda kv: (-(kv[1][0][0] if kv[1] else 0)))
+        for md_path, cands in md_order:
+            sel = None
+            for score, t in cands:
+                if t["idx"] not in used_title_idxs:
+                    sel = t
+                    used_title_idxs.add(t["idx"])
+                    break
+            assigned[md_path] = sel
+
+        # apply assignments
+        ok = 0
+        miss = []
+        ambiguous = []
+        for md_path, sel in assigned.items():
+            if not sel:
+                miss.append(md_path)
+                continue
+            # build assign dict from selected title row
+            r = sel["row"]
             assign = {
-                "title": title,
+                "title": sel["title"],
                 "category_code": r.get("category_code") or r.get("category") or r.get("类目编码"),
                 "category_name": r.get("category_name") or r.get("类目名称"),
                 "level": r.get("level") or r.get("层级"),
@@ -140,19 +228,29 @@ def main():
                 "parent_key": r.get("parent_key") or r.get("上级键"),
                 "version_key": r.get("version_key") or r.get("版本键"),
             }
-            md = find_md_by_title(root, title)
-            if not md:
-                miss.append(title); continue
-            ensure_front_matter(md, assign); ok += 1
+            ensure_front_matter(Path(md_path), assign)
+            ok += 1
+            # record ambiguous if there were multiple candidates
+            if len(md_candidates.get(md_path, [])) > 1:
+                ambiguous.append((md_path, [entry[1]["title"] for entry in md_candidates[md_path]]))
 
         # re-pack
         with zipfile.ZipFile(outp, "w", compression=zipfile.ZIP_DEFLATED) as zw:
             for p in td.rglob("*"):
                 if p.is_file():
                     zw.write(p, arcname=str(p.relative_to(td)))
-        print(f"[ok] updated md files: {ok}, missing: {len(miss)}")
+
+        print(f"[ok] updated md files: {ok}, missing (unassigned md): {len(miss)}")
         if miss:
-            print("[miss] titles not matched:", "; ".join(miss[:15]), ("..." if len(miss)>15 else ""))
+            print("[miss] md files not assigned:")
+            for m in miss[:30]:
+                print(" -", m)
+        if ambiguous:
+            print(f"[warn] ambiguous mappings (md -> candidate titles), count: {len(ambiguous)}")
+            for mdp, cand in ambiguous[:30]:
+                print(mdp)
+                for t in cand:
+                    print("  -", t)
 
 if __name__ == "__main__":
     main()
