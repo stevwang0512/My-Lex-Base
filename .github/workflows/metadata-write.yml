@@ -10,19 +10,16 @@ on:
         default: "meta.csv"
   push:
     paths:
-      - "meta.csv"              # CSV 变更时自动跑
+      - "meta.csv"
       - "scripts/assign_metadata_from_csv.py"
 
 permissions:
-  contents: write        # 允许推送内容
-  pull-requests: write   # 允许创建和更新 PR
+  contents: write
+  pull-requests: write
 
 jobs:
   write-meta:
     runs-on: ubuntu-latest
-    permissions:
-      contents: write           # 允许提交回仓库
-      pull-requests: write
     steps:
       - name: Checkout
         uses: actions/checkout@v4
@@ -32,24 +29,21 @@ jobs:
         with:
           python-version: "3.x"
 
-      - name: Zip content
-        run: zip -r current_content.zip content
+      # REMOVED: 'Zip content' step is no longer needed.
 
-      - name: Run metadata writer
+      - name: Run metadata writer (in-place)
         run: |
           python scripts/assign_metadata_from_csv.py \
-            --zip current_content.zip \
             --csv "${{ github.event.inputs.csv_path || 'meta.csv' }}" \
-            --out content_with_meta.zip
+            --content-dir content
 
-      - name: Unzip back to repo
-        run: unzip -o content_with_meta.zip -d .
+      # REMOVED: 'Unzip back to repo' step is no longer needed.
 
       - name: Create PR with changes
         uses: peter-evans/create-pull-request@v6
         with:
           commit-message: "chore: inject metadata from CSV (CI)"
           title: "Inject metadata from CSV"
-          body: "Automated front matter injection for v0.40"
+          body: "Automated front matter injection via in-place script modification."
           branch: "ci/metadata-injection"
           delete-branch: true
