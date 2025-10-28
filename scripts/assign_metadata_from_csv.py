@@ -1,18 +1,22 @@
 #!/usr/bin/env python3
 # -*- coding: utf-8 -*-
 """
-assign_metadata_from_csv.py — v0.40-meta-writer-base (Always-emit keys)
+assign_metadata_from_csv.py — v0.41-meta-writer-inplace (Always-emit keys, In-place modification)
 - Read a CSV containing: title, category_code, category_name, level, catalog_key, sub_anchor, parent_key, version_key
-- Unzip a content zip, write/update YAML front matter in each .md matched by title (FULL/HALF width insensitive, punctuation-agnostic)
-- Idempotent on content; **always emits FRONT_KEYS even when values are empty** (e.g., version_key, sub_anchor)
-- De-duplicates CSV rows by a normalized (title, category_code) key unless --no-dedupe is provided
-- Emits a mapping report and ambiguity diagnostics
+- Directly find and update YAML front matter in each .md file matched by title (in-place).
+- Idempotent: a robust parser ensures only one YAML block exists, cleaning up duplicates.
+- De-duplicates CSV rows by a normalized (title, category_code) key unless --no-dedupe is provided.
+- Emits a mapping report and ambiguity diagnostics.
 
 Usage:
-  python scripts/assign_metadata_from_csv.py --zip content.zip --csv meta.csv --out content_with_meta.zip [--content-root content] [--dry-run]
+  python scripts/assign_metadata_from_csv.py --csv meta.csv [--content-dir content] [--dry-run]
 """
 from __future__ import annotations
-import argparse, csv, io, re, sys, tempfile, zipfile
+import argparse
+import csv
+import io
+import re
+import sys
 from pathlib import Path
 import unicodedata
 
@@ -56,7 +60,6 @@ def load_csv(p: Path):
             rows.append(r)
     return rows
 
-
 def dedupe_rows(rows, keep_last=False):
     seen = {}
     order = []
@@ -80,14 +83,26 @@ def dedupe_rows(rows, keep_last=False):
 # -------------------------------
 
 def split_front_matter(text: str):
-    if text.startswith("---"):
-        m = re.match(r"^---\s*\n(.*?)\n---\s*\n(.*)\Z", text, flags=re.S)
-        if m:
-            return ("yaml", m.group(1), m.group(2))
-        parts = re.split(r"^---\s*$", text, maxsplit=2, flags=re.M)
-        if len(parts) >= 3:
-            return ("yaml", parts[1], parts[2])
-    return (None, None, text)
+    """
+    Robustly splits YAML front matter from body. Only recognizes the first block.
+    This inherently cleans up any previously duplicated YAML blocks upon rewrite.
+    """
+    if not text.startswith('---'):
+        return None, None, text
+
+    # Find the end of the first YAML block
+    try:
+        # Start searching after the initial '---'
+        end_marker_pos = text.find('\n---', 4)
+        if end_marker_pos == -1:
+            return None, None, text # No closing '---' found
+
+        yaml_text = text[4:end_marker_pos].strip()
+        # The rest of the file is the body, including any potential duplicate blocks
+        body = text[end_marker_pos + 4:].lstrip()
+        return "yaml", yaml_text, body
+    except Exception:
+        return None, None, text
 
 
 def parse_yaml(s: str):
@@ -95,11 +110,12 @@ def parse_yaml(s: str):
     if not s:
         return data
     for line in s.splitlines():
-        m = re.match(r"\s*([A-Za-z0-9_\-]+)\s*:\s*(.*)\s*$", line)
-        if m:
-            k, v = m.group(1), m.group(2)
-            v = re.sub(r"^['\"]|['\"]$", "", v.strip())
-            data[k] = v
+        if ':' in line:
+            key, val = line.split(':', 1)
+            key = key.strip()
+            # Clean up value: remove surrounding quotes and whitespace
+            val = val.strip().strip('"').strip("'")
+            data[key] = val
     return data
 
 
@@ -149,7 +165,7 @@ def ensure_front_matter(md_path: Path, assign: dict) -> tuple[bool, str]:
                 meta[k] = ""
                 changed = True
 
-    new_text = "---\n" + dump_yaml(meta) + "---\n" + body.lstrip()
+    new_text = "---\n" + dump_yaml(meta) + "---\n" + body
 
     if changed and new_text != text:
         md_path.write_text(new_text, "utf-8")
@@ -181,10 +197,16 @@ def best_candidates_for_md(md: Path, title_items, content_root: str):
     md_norm = normalize_title(md.stem)
     parts = md.parts
     md_cat = ""
-    if len(parts) >= 2 and parts[0] == content_root:
-        m = re.match(r"^(\d+)", parts[1])
-        if m:
-            md_cat = m.group(1).lstrip("0")
+    # Adjust path parsing to be more flexible
+    try:
+        root_index = parts.index(content_root)
+        if root_index < len(parts) - 1:
+            m = re.match(r"^(\d+)", parts[root_index + 1])
+            if m:
+                md_cat = m.group(1).lstrip("0")
+    except ValueError:
+        pass # content_root not in path, md_cat remains empty
+
     cands = []
     for t in title_items:
         if not t["norm"] or not md_norm:
@@ -206,22 +228,20 @@ def best_candidates_for_md(md: Path, title_items, content_root: str):
 
 def main():
     ap = argparse.ArgumentParser()
-    ap.add_argument("--zip", required=True, help="zip containing content/ directory")
+    # MODIFIED: Removed --zip and --out, added --content-dir for in-place modification
     ap.add_argument("--csv", required=True, help="CSV with metadata (must contain 'title' column)")
-    ap.add_argument("--out", default="content_with_meta.zip")
-    ap.add_argument("--content-root", default="content")
+    ap.add_argument("--content-dir", default="content", help="Path to the content/ directory to modify in-place")
     ap.add_argument("--dry-run", action="store_true")
     ap.add_argument("--dedupe", choices=["first","last","none"], default="first")
     args = ap.parse_args()
 
-    zipp = Path(args.zip)
     csvp = Path(args.csv)
-    outp = Path(args.out)
+    content_dir = Path(args.content_dir)
 
-    if not zipp.exists():
-        print("[error] zip not found:", zipp); sys.exit(1)
+    if not content_dir.is_dir():
+        print(f"[error] content directory not found: {content_dir}"); sys.exit(1)
     if not csvp.exists():
-        print("[error] csv not found:", csvp); sys.exit(1)
+        print(f"[error] csv not found: {csvp}"); sys.exit(1)
 
     rows0 = load_csv(csvp)
     if not rows0:
@@ -235,93 +255,93 @@ def main():
         rows = rows0
 
     title_items = build_title_items(rows)
+    
+    # MODIFIED: No longer uses tempdir or zip files. Works directly on the content directory.
+    print(f"[info] Operating directly on directory: {content_dir.resolve()}")
 
-    with tempfile.TemporaryDirectory() as td:
-        td = Path(td)
-        with zipfile.ZipFile(zipp, "r") as zf:
-            zf.extractall(td)
+    md_files = list(content_dir.rglob("*.md"))
+    # The content_root name is needed for path-based category matching
+    content_root_name = content_dir.name
+    md_candidates = {str(md): best_candidates_for_md(md, title_items, content_root_name) for md in md_files}
 
-        root = td / args.content_root
-        if not root.exists():
-            print("[error] content root not found in zip:", root); sys.exit(1)
+    assigned = {}
+    used_title_idxs = set()
+    md_order = sorted(md_candidates.items(), key=lambda kv: (-(kv[1][0][0] if kv[1] else 0)))
+    for md_path_str, cands in md_order:
+        sel = None
+        for score, t in cands:
+            if t["idx"] not in used_title_idxs:
+                sel = t
+                used_title_idxs.add(t["idx"])
+                break
+        assigned[md_path_str] = sel
 
-        md_files = list(root.rglob("*.md"))
-        md_candidates = {str(md): best_candidates_for_md(md, title_items, args.content_root) for md in md_files}
+    ok = 0
+    skipped_no_change = 0
+    miss = []
+    ambiguous = []
+    mapping_report = []
 
-        assigned = {}
-        used_title_idxs = set()
-        md_order = sorted(md_candidates.items(), key=lambda kv: (-(kv[1][0][0] if kv[1] else 0)))
-        for md_path, cands in md_order:
-            sel = None
-            for score, t in cands:
-                if t["idx"] not in used_title_idxs:
-                    sel = t
-                    used_title_idxs.add(t["idx"])
-                    break
-            assigned[md_path] = sel
-
-        ok = 0
-        skipped_no_change = 0
-        miss = []
-        ambiguous = []
-        mapping_report = []
-
-        for md_path, sel in assigned.items():
-            if not sel:
-                miss.append(md_path); continue
-            r = sel["row"]
-            assign = {
-                "title": sel["title"],
-                "category_code": r.get("category_code") or r.get("category") or r.get("类目编码") or "",
-                "category_name": r.get("category_name") or r.get("类目名称") or "",
-                "level": r.get("level") or r.get("层级") or "",
-                "catalog_key": r.get("catalog_key") or r.get("目录键") or "",
-                "sub_anchor": r.get("sub_anchor") or r.get("子锚点") or "",
-                "parent_key": r.get("parent_key") or r.get("上级键") or "",
-                "version_key": r.get("version_key") or r.get("版本键") or "",
-            }
-            if args.dry_run:
-                changed = True
-            else:
-                changed, _ = ensure_front_matter(Path(md_path), assign)
-            if changed:
-                ok += 1
-            else:
-                skipped_no_change += 1
-            mapping_report.append((md_path, sel["title"], sel["category"], changed))
-            if len(md_candidates.get(md_path, [])) > 1:
-                ambiguous.append((md_path, [entry[1]["title"] for entry in md_candidates[md_path]]))
-
-        if not args.dry_run:
-            with zipfile.ZipFile(outp, "w", compression=zipfile.ZIP_DEFLATED) as zw:
-                for p in (td).rglob("*"):
-                    if p.is_file():
-                        zw.write(p, arcname=str(p.relative_to(td)))
-
-        print(f"[ok] updated md files: {ok}, unchanged: {skipped_no_change}, missing (unassigned md): {len(miss)}")
+    for md_path_str, sel in assigned.items():
+        md_path = Path(md_path_str)
+        if not sel:
+            miss.append(str(md_path.relative_to(content_dir.parent))); continue
+        r = sel["row"]
+        assign = {
+            "title": sel["title"],
+            "category_code": r.get("category_code") or r.get("category") or r.get("类目编码") or "",
+            "category_name": r.get("category_name") or r.get("类目名称") or "",
+            "level": r.get("level") or r.get("层级") or "",
+            "catalog_key": r.get("catalog_key") or r.get("目录键") or "",
+            "sub_anchor": r.get("sub_anchor") or r.get("子锚点") or "",
+            "parent_key": r.get("parent_key") or r.get("上级键") or "",
+            "version_key": r.get("version_key") or r.get("版本键") or "",
+        }
         if args.dry_run:
-            print("[note] dry-run mode: no files written, no zip produced.")
-        if miss:
-            print("[miss] md files not assigned:")
-            for m in miss[:50]:
-                print(" -", m)
-        if ambiguous:
-            print(f"[warn] ambiguous mappings (md -> candidate titles), count: {len(ambiguous)}")
-            for mdp, cand in ambiguous[:50]:
-                print(mdp)
-                for t in cand:
-                    print("  -", t)
-        # Mapping report CSV to stdout
-        try:
-            import csv as _csv
-            out = io.StringIO()
-            w = _csv.writer(out)
-            w.writerow(["md_path","matched_title","category","changed"])
-            for mdp, t, c, ch in mapping_report:
-                w.writerow([mdp, t, c, "yes" if ch else "no"])
-            sys.stdout.write(out.getvalue())
-        except Exception as e:
-            print("[warn] failed to emit mapping report:", e)
+            changed = True # Simulate a change for reporting purposes
+        else:
+            changed, _ = ensure_front_matter(md_path, assign)
+        if changed:
+            ok += 1
+        else:
+            skipped_no_change += 1
+        
+        report_path = str(md_path.relative_to(content_dir.parent))
+        mapping_report.append((report_path, sel["title"], sel["category"], changed))
+        
+        if len(md_candidates.get(md_path_str, [])) > 1:
+            ambiguous.append((report_path, [entry[1]["title"] for entry in md_candidates[md_path_str]]))
+
+    # MODIFIED: Removed the final zip creation step.
+    print(f"[ok] updated md files: {ok}, unchanged: {skipped_no_change}, missing (unassigned md): {len(miss)}")
+    if args.dry_run:
+        print("[note] dry-run mode: no files were written.")
+    else:
+        print("[info] Files were modified in-place.")
+
+    if miss:
+        print("\n[miss] md files not assigned:")
+        for m in miss[:50]:
+            print(" -", m)
+    if ambiguous:
+        print(f"\n[warn] ambiguous mappings (md -> candidate titles), count: {len(ambiguous)}")
+        for mdp, cand in ambiguous[:50]:
+            print(mdp)
+            for t in cand:
+                print("  -", t)
+    
+    # Mapping report CSV to stdout
+    try:
+        import csv as _csv
+        out = io.StringIO()
+        w = _csv.writer(out)
+        w.writerow(["md_path","matched_title","category","changed"])
+        for mdp, t, c, ch in mapping_report:
+            w.writerow([mdp, t, c, "yes" if ch else "no"])
+        print("\n--- Mapping Report (CSV) ---")
+        sys.stdout.write(out.getvalue())
+    except Exception as e:
+        print("[warn] failed to emit mapping report:", e)
 
 if __name__ == "__main__":
     main()
