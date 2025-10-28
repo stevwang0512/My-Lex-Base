@@ -1,73 +1,124 @@
 # scripts/tree_build.py — build site/index/tree.json from content/
 from pathlib import Path
-import json, re, sys
+import json
+import re
+import sys
 
 ROOT = Path(__file__).resolve().parents[1]
-SRC  = ROOT / "content"
-OUT  = ROOT / "site" / "index" / "tree.json"
+SRC = ROOT / "content"
+OUT = ROOT / "site" / "index" / "tree.json"
+
+LEVEL_MAP = {
+    '1': '法律',
+    '2': '行政法规',
+    '3': '司法解释',
+    '4': '部门规章'
+}
 
 def read_text(p: Path) -> str:
+    """Reads text from a file, ignoring errors."""
     try:
         return p.read_text(encoding="utf-8", errors="ignore")
     except Exception:
         return ""
 
-def strip_front_matter(s: str) -> str:
-    if s.startswith("---"):
-        m = re.search(r"^---\s*$.*?^---\s*$", s, flags=re.S | re.M)
-        if m:
-            return s[m.end():]
-    return s
+def parse_front_matter(p: Path) -> dict:
+    """
+    Parses YAML front matter from a Markdown file.
+    It reads all key-value pairs defined in the YAML block.
+    """
+    text = read_text(p)
+    meta = {}
+    content_after_yaml = text
 
-def first_heading_title(s: str, fallback: str) -> str:
-    m = re.search(r"^\s*#{1,6}\s+(.+?)\s*$", s, flags=re.M)
-    return m.group(1).strip() if m else fallback
+    if text.startswith("---"):
+        match = re.search(r"^---\s*$.*?^---\s*$", text, flags=re.S | re.M)
+        if match:
+            yaml_text = match.group(0).strip("---").strip()
+            content_after_yaml = text[match.end():]
+            for line in yaml_text.splitlines():
+                if ':' in line:
+                    key, val = line.split(':', 1)
+                    key = key.strip()
+                    # Clean up value: remove surrounding quotes and whitespace
+                    val = val.strip().strip('"').strip("'")
+                    meta[key] = val
+
+    # Fallback for title: use first H1 heading if 'title' is missing in YAML
+    if 'title' not in meta or not meta.get('title'):
+        h1_match = re.search(r"^\s*#{1,6}\s+(.+?)\s*$", content_after_yaml, flags=re.M)
+        meta['title'] = h1_match.group(1).strip() if h1_match else p.stem
+
+    return meta
+
+def level_to_name(level_str: str) -> str:
+    """Converts level code ('1', '2', etc.) to its corresponding name."""
+    return LEVEL_MAP.get(str(level_str).strip(), '其他')
 
 def build_tree_safe(src: Path):
-    """Allow .md at level-3 or level-4. Render to 3-level tree."""
-    from collections import defaultdict
-    level2 = defaultdict(lambda: defaultdict(lambda: defaultdict(list)))
+    """
+    Builds a sorted directory tree based on Markdown front matter metadata.
+    """
+    docs_with_meta = []
+    print("[info] Start scanning and parsing metadata from .md files...")
     for p in src.rglob('*.md'):
-        parts = p.relative_to(src).parts
-        if len(parts) == 3:
-            L2, L3, _ = parts
-            level2[L2][L3]['__files__'].append(p)
-        elif len(parts) >= 4:
-            L2, L3, L4 = parts[0], parts[1], parts[2]
-            level2[L2][L3][L4].append(p)
-        else:
-            print('[warn] skip shallow md:', p)
+        meta = parse_front_matter(p)
+        # Skip files that lack essential metadata for classification
+        if not meta.get('category_code') or not meta.get('level'):
+            print(f'[warn] Skipping file with missing metadata: {p.relative_to(ROOT)}')
             continue
+        
+        meta['path'] = p.relative_to(src).as_posix()
+        meta['name'] = p.name
+        docs_with_meta.append(meta)
+    
+    print(f"[info] Parsed {len(docs_with_meta)} documents with metadata.")
+
+    # Globally sort all documents based on the specified keys
+    docs_with_meta.sort(key=lambda doc: (
+        doc.get('category_code', ''),
+        doc.get('level', ''),
+        doc.get('catalog_key', ''),
+        doc.get('sub_anchor', '')
+    ))
+    print("[info] Documents sorted globally based on metadata.")
+
     tree = []
-    for name2 in sorted(level2.keys()):
-        n2 = {'name': name2, 'type': 'dir', 'children': []}
-        for name3 in sorted(level2[name2].keys()):
-            n3 = {'name': name3, 'type': 'dir', 'children': []}
-            bucket = level2[name2][name3]
-            files_lvl3 = bucket.get('__files__', [])
-            if files_lvl3:
-                for f in sorted(files_lvl3, key=lambda x: x.name):
-                    rel = f.relative_to(src).as_posix()
-                    raw = read_text(f)
-                    title = first_heading_title(strip_front_matter(raw), f.name)
-                    n3['children'].append({
-                    'name': f.name,              # 展示用文件名（不含排序清理，前端处理）
-                    'type': 'file',
-                    'path': 'content/' + rel,    # 渲染与跳转用
-                    'title': title               # 依然保留标题（供别处需要）
-                    })
-            for name4 in sorted(k for k in bucket.keys() if k != '__files__'):
-                files = bucket[name4]
-                if not files: continue
-                n4 = {'name': name4, 'type': 'dir', 'children': []}
-                for f in sorted(files, key=lambda x: x.name):
-                    rel = f.relative_to(src).as_posix()
-                    raw = read_text(f)
-                    title = first_heading_title(strip_front_matter(raw), f.name)
-                    n4['children'].append({'name': f.name, 'type': 'file', 'path': 'content/' + rel, 'title': title})
-                n3['children'].append(n4)
-            n2['children'].append(n3)
-        tree.append(n2)
+    category_nodes = {}  # Tracks L2 nodes: {category_name: node}
+    
+    for doc in docs_with_meta:
+        category_name = doc.get('category_name', '未分类')
+        level_name = level_to_name(doc.get('level', ''))
+
+        # L2 Directory: Find or create category node
+        if category_name not in category_nodes:
+            category_node = {'name': category_name, 'type': 'dir', 'children': []}
+            category_nodes[category_name] = category_node
+            tree.append(category_node)
+        else:
+            category_node = category_nodes[category_name]
+
+        # L3 Directory: Find or create level node within the category
+        level_node = None
+        for child in category_node['children']:
+            if child['name'] == level_name:
+                level_node = child
+                break
+        
+        if level_node is None:
+            level_node = {'name': level_name, 'type': 'dir', 'children': []}
+            category_node['children'].append(level_node)
+
+        # L4 File: Create the file node
+        file_node = {
+            'name': doc['name'],
+            'type': 'file',
+            'path': 'content/' + doc['path'],
+            'title': doc.get('title', doc['name'])
+        }
+        level_node['children'].append(file_node)
+
+    print("[info] Tree structure built successfully.")
     return tree
 
 def main():
